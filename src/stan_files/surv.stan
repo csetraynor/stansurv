@@ -346,3 +346,10 @@ model {
   }
 
 }
+
+/*generated quantities {
+	vector[nrows] log_lik;
+	for (n in 1:nrows)
+		log_lik[n] = 
+
+}*/
