@@ -23,29 +23,70 @@ pred_surv <- function(fit, testx = NULL, timepoints = NULL, method = "linear", t
   return(surv.test)
 }
 
-link.surv <- function(b){
-  exp( -(b))
+link_surv.helper <- function(basehaz, predictionind = NULL ){
+  if(!is.null(p)){
+    exp( -(b))^exp(p)
+  } else {
+    exp( -(b))
+  }
 }
 
-prepare.surv <- function(d, time = "time", status = "status"){
+prepare_surv <- function(d, time = "time", status = "status"){
   if(!is_in("time", colnames(d) ) ){
     d$time <- d[[time]]
   }
   if(!is_in("status", colnames(d) ) ){
     d$status <- d[[status]]
   }
+  d <- d[order(d$time), ]
+  d
 }
 
 get_obs.time <- function(d){
   sort(  d$time[ as.logical(d$status) ] )
 }
 
-extract_basehaz.samples <- function(fit){
+extract_basehaz_draws <- function(fit){
   as.matrix( rstan::extract(fit$stanfit)$basehaz_coefs )
 }
 
-extract_splines.bases <- function(fit){
+extract_splines_bases <- function(fit){
   unlist( fit$basehaz$spline_basis )
+}
+
+check_null_model <- function(fit){
+  !( n_distinct(fit$formula$allvars) > 2 )
+}
+
+extract_beta_draws <- function(fit){
+  if(!check_null_model(fit)){
+    as.matrix( rstan::extract(fit$stanfit)$beta )
+  } else {
+    NULL
+  }
+}
+
+extract_predictors <- function(fit){
+  if(!check_null_model(fit)){
+    obs.p <- fit$data[fit$formula$allvars[-(1:2)] ]
+    obs.vars <- extract_vars(fit)
+    factor.vars <- obs.p[grep("factor\\(", obs.vars)]
+    factor.vars2 <- obs.p[ ,is.fact] <- sapply(obs.p, is.factor)
+    if(ncol(factor.vars) == 0){
+      return(obs.p)
+    } else {
+
+    }
+
+  } else {
+    NULL
+  }
+}
+
+extract_vars <- function(fit){
+  vars <- unlist( strsplit(deparse(fit$formula$rhs), "[+]") )
+  vars <- gsub(" ", "", vars) #remove space
+  vars
 }
 
 get_surv.post <- function(baseline_hazard, spline_basis){
