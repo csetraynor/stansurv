@@ -3,7 +3,7 @@
 export(drcs)
 export(integrate_tdbrier)
 export(integrate_tdbrier_reference)
-export(pred_surv)
+export(link_surv)
 export(rcs)
 export(stan_surv)
 export(str_strata)

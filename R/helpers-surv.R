@@ -1,8 +1,8 @@
-#Function to predict the survival
+# Function to predict the survival
 #'
 #' Predict survival from a stan_surv object
 #'
-#' @export pred_surv
+#' @export link_surv
 #' @importFrom Hmisc approxExtrap
 #'
 #' @examples
@@ -17,8 +17,7 @@
 #'                 basehaz = "fpm", iknots = c(6.594869,  7.285963 ),
 #'                 degree = 2, prior_aux = normal(0, 2, autoscale = F))
 #'
-
-pred_surv <- function(fit, testx = NULL, timepoints = NULL, method = "linear", time = "time", status = "status"){
+link_surv <- function(fit, testx = NULL, timepoints = NULL, method = "linear", time = "time", status = "status"){
   obs.time <- get_obs.time(fit$data)
   if(method != "linear" && method != "constant"){
     stop2(paste0("method ", method, " not implement.") )
@@ -71,7 +70,7 @@ link_surv_base.helper <- function(b){
 }
 
 link_surv_lin.helper <- function(p, s){
-  s^(exp(p))
+  s^(exp(c(p) ))
 }
 
 prepare_surv <- function(d, time = "time", status = "status"){
@@ -111,37 +110,6 @@ extract_beta_draws <- function(fit){
 
 
 
-link.surv <- function(fit){
-
-  baseline_hazard <- extract_basehaz_draws(fit);
-  spline_basis <- extract_splines_bases(fit);
-  beta_draws <- extract_beta_draws(fit);
-  covars <- get_predictors(fit);
-
-  if(!check_null_model(fit)){
-    surv_post <- lapply(seq_along(1:nrow(baseline_hazard)), function(s){
-      haz_post <- sapply(seq_along(1:nrow(spline_basis)), function(n){
-        log( basehaz.samples[s, ] ) %*% spline_basis[n, ]
-      })
-
-      survhaz <- link.surv.helper(haz_post)
-
-    })
-    basesurv_post <- do.call(cbind, surv_post)
-
-  } else {
-    basesurv_post <- lapply(seq_along(1:nrow(baseline_hazard)), function(s){
-      basehaz_post <- sapply(seq_along(1:nrow(spline_basis)), function(n){
-        log( basehaz.samples[s, ] ) %*% spline_basis[n, ]
-      })
-      link.surv.helper(basehaz_post)
-    })
-    basesurv_post <- do.call(cbind, surv_post)
-  }
-
-}
-
-
 get_km.frame <- function(obs, strata = NULL, time = "time", status = "status"){
 
   if(!is.null(strata)){
@@ -168,8 +136,5 @@ get_km.frame <- function(obs, strata = NULL, time = "time", status = "status"){
 
   obs.mortality
 }
-
-
-
 
 

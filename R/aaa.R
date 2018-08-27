@@ -108,3 +108,14 @@ str_strata <- function(c){
     dplyr::mutate_all(funs(strata_replace))
   test
 }
+
+
+
+convert_blank_to_na <- function(x) {
+  if(!purrr::is_character(x)){
+    return(x)
+    print("Error not character")
+  } else {
+    ifelse(x == "" | x == "[Not Available]" | x == "--" | x == "not reported" | x == "[Not Applicable]", NA, x)
+  }
+}

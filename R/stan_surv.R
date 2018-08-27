@@ -24,7 +24,7 @@ stan_surv <- function(formula, data, basehaz = "fpm", timescale = "log",
                       prior_aux = list(), prior_PD = FALSE,
                       algorithm = c("sampling", "meanfield", "fullrank"),
                       adapt_delta = 0.95, max_treedepth = 11L,
-                      init = "random", ...) {
+                      init = "random", time = "time", status = "status", ...) {
 
   #-----------------------------
   # Pre-processing of arguments
