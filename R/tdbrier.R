@@ -43,10 +43,10 @@
 #' URL http://www.jstatsoft.org/v50/i11/.
 #' @export tdbrier
 
-tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L){
+tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L, method = "gp"){
   #select timepoints with observed event
   holdout <- prepare_surv(holdout, time = time, status = status)
-  timepoints <-  seq(min(holdout[[time]]), max(holdout[[time]]), length.out = 100)
+  timepoints =  seq(min(get_obs.time(testx)), max(get_obs.time(testx)), length.out = 100)
 
   if(any( class(fit)  == "coxph") ){
     #get probabilites
@@ -60,15 +60,16 @@ tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L)
     time <- timepoints
     ref <- cox.brier$AppErr$Reference
     ibrier <- integrate_tdbrier(cox.brier)
+    ibrier_ref <- integrate_tdbrier_reference(cox.brier)
     object <- cox.brier
 
-    rsquaredbs <- suppressWarnings ( pec::R2(object = cox.brier)$AppErr )
-    out <- list(object, rsquaredbs, ibrier, apperror, ref, time)
-    names(out) <- c("brier.object", "rsquaredbs","ibrier", "apperror", "reference","time")
+    rsquaredbs <- suppressWarnings ( pec::R2(object = cox.brier, times = cox.brier$maxtime, reference = 1 ) )
+    out <- list(object, rsquaredbs, ibrier, ibrier_ref, apperror, ref, time)
+    names(out) <- c("brier.object", "rsquaredbs","ibrier", "ibrieref", "apperror", "reference","time")
     out
 
   } else if (any( class(fit$stanfit) == "stanfit" ) ){
-    ind.pred <- pred_surv(fit = fit, testx = holdout, timepoints = timepoints, ncores = ncores)
+    ind.pred <- pred_surv2(fit = fit, testx = holdout, timepoints = timepoints, ncores = ncores, method = method)
 
     ba.brier <- suppressMessages( pec::pec(ind.pred, Surv(time, status) ~ 1,
                                         data = holdout,
@@ -79,11 +80,12 @@ tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L)
     time <- timepoints
     ref <- ba.brier$AppErr$Reference
     ibrier <- integrate_tdbrier(ba.brier)
+    ibrier_ref <- integrate_tdbrier_reference(ba.brier)
     object <- ba.brier
 
-    rsquaredbs <- suppressWarnings ( pec::R2(object = ba.brier)$AppErr )
-    out <- list(object, rsquaredbs, ibrier, apperror, ref, time)
-    names(out) <- c("brier.object", "rsquaredbs","ibrier", "apperror", "reference","time")
+    rsquaredbs <- suppressWarnings ( pec::R2(object = ba.brier, times = ba.brier$maxtime, reference = 1) )
+    out <- list(object, rsquaredbs, ibrier, ibrier_ref, apperror, ref, time)
+    names(out) <- c("brier.object", "rsquaredbs","ibrier", "ibrier_ref", "apperror", "reference","time")
     out
   } else {
     stop2(paste0("Error: No method for evaluating predicted probabilities from objects in class", class(fit)))
@@ -94,21 +96,115 @@ tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L)
 #' @export
 integrate_tdbrier <-
   function(x, ...) {
-    stop <- max(x$time[!is.na(x$AppErr$matrix)])
-    ibrier <- pec::crps(x, models = "matrix", times = stop)[1]
-    ibrier <- unlist(ibrier)
+    ibrier <- pec::crps(x, models = "matrix", times = x$maxtime)
     return(ibrier)
   }
 #' @export
 #' @rdname tdbrier
 integrate_tdbrier_reference <-
   function(x, ...) {
-    stop <- max(x$time[!is.na(x$AppErr$Reference)])
-    ibrier <- pec::crps(x, models = "Reference", times = stop)[1]
-    ibrier <- unlist(ibrier)
+    ibrier <- pec::crps(x, models = "Reference", times =  x$maxtime)
     return(ibrier)
   }
 
+
+# Function to predict the survival for each individual
+#'
+#' Predict survival from a stan_surv object
+#'
+#' @export link_surv
+#' @importFrom Hmisc approxExtrap
+#'
+#' @examples
+#' pbc2 <- survival::pbc
+#' pbc2 <- pbc2[!is.na(pbc2$trt),]
+#' pbc2$status <- as.integer(pbc2$status > 0)
+#' m1 <- stan_surv(survival::Surv(time, status) ~ trt, data = pbc2)
+#'
+#' df <- flexsurv::bc
+#' m2 <- stan_surv(survival::Surv(rectime, censrec) ~ group,
+#'                 data = df, cores = 1, chains = 1, iter = 2000,
+#'                 basehaz = "fpm", iknots = c(6.594869,  7.285963 ),
+#'                 degree = 2, prior_aux = normal(0, 2, autoscale = F))
+#'
+pred_surv2 <- function(fit, testx = NULL, timepoints = NULL, time = "time", status = "status", ncores = 1L, method = "gp"){
+  obs.time <- get_obs.time(fit$data)
+  if(is.null(timepoints)){
+    timepoints <- test.time <- get_obs.time(testx)
+  }
+  basehaz.samples <- extract_basehaz_draws(fit)
+  spline.basis <- extract_splines_bases(fit)
+
+  if(!check_null_model(fit)){
+    beta_draws <- extract_beta_draws(fit);
+    varis.obs <- get_predictors(fit);
+
+    basehaz.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
+      sapply(seq_along(1:nrow(spline.basis)), function(n){
+      basehaz.samples[s, ]  %*% spline.basis[n, ]
+    })})
+
+    basehaz <- do.call(cbind, basehaz.post)
+    basehaz <- apply(X = basehaz, MARGIN = 1, FUN = median)
+
+    obs.dat <- data.frame(haz = basehaz,
+                           time = obs.time )
+    if(method == "linear" | method == "constant"){
+      # surv.approx <- approx(x = obs.time, y = surv.base, xout = timepoints, method = method)$y # only interpolation
+      haz.approx <- Hmisc::approxExtrap(x = obs.time, y = basehaz, xout = timepoints, method = method)$y # with extrapolation
+    } else if(method == "gp" | method == "gaussian process"){
+      haz.bgp <- tgp:: bgp(X= obs.time, Z= basehaz)
+      X <- data.frame(x1 = obs.time)
+      XX <- data.frame(x1 = haz.approx)
+      haz.bgp$Xsplit <- rbind(X, XX)
+      haz.approx <- predict(object = haz.bgp, XX = timepoints)$ZZ.mean
+    } else if(method == "gtp" | method == "treed gaussian process"){
+      haz.btgp <- tgp:: btgp(X= obs.time, Z= basehaz)
+      X <- data.frame(x1 = obs.time)
+      XX <- data.frame(x1 = haz.approx)
+      haz.btgp$Xsplit <- rbind(X, XX)
+      haz.approx <- predict(object = haz.btgp, XX = timepoints)$ZZ.mean
+    } else {
+      stop2(paste0("method ", method, " not implemented"))
+    }
+    surv.approx <- link_surv_base.helper(b = haz.approx)
+    surv.approx[surv.approx > 1] <- 1
+    surv.approx[surv.approx < 0] <- 0
+
+ind.post <- lapply(seq_along(1:nrow(testx)),
+                               function(i){
+  surv.post <- sapply(seq_along(1:nrow(beta_draws)), function(s){
+    lin_post <- varis.obs[i, ] %*% beta_draws[s, ]
+    link_surv_lin.helper(p = lin_post, s = surv.approx)
+  })
+  apply(surv.post, 1, median)
+})
+
+ind.post <- do.call(rbind, ind.post)
+rownames(ind.post) <- rownames(testx)
+  } else {
+    # For null model
+    surv.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
+      basehaz.post <- sapply(seq_along(1:nrow(spline.basis)), function(n){
+        basehaz.samples[s, ]  %*% spline.basis[n, ]
+      })
+      surv_base <- link_surv_base.helper(b = basehaz.post)
+      surv.approx <- Hmisc::approxExtrap(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
+      # surv.approx <- approx(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
+      surv.approx[surv.approx > 1] <- 1
+      surv.approx[surv.approx < 0] <- 0
+      surv.approx
+    })
+    surv.post <- do.call(cbind, surv.post)
+    surv.post <- apply(surv.post, 1, median)
+    #No difference in survival expected in the null model
+    ind.post <- matrix(rep(surv.post, nrow(testx)),
+                       nrow = nrow(testx),
+                       ncol = n_distinct(timepoints),
+                       byrow = TRUE)
+  }
+  return(ind.post)
+}
 
 
 
@@ -163,118 +259,33 @@ pred_surv <- function(fit, testx = NULL, timepoints = NULL, method = "linear", t
       surv.post <- do.call(cbind, surv.post)
       apply(surv.post, 1, median)
     }, mc.cores = ncores)
-     ind.post <- do.call(rbind, ind.post)
-     rownames(ind.post) <- rownames(testx)
+    ind.post <- do.call(rbind, ind.post)
+    rownames(ind.post) <- rownames(testx)
   } else {
     # For null model
     surv.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
       basehaz.post <- sapply(seq_along(1:nrow(spline.basis)), function(n){
         basehaz.samples[s, ]  %*% spline.basis[n, ]
       })
-      surv_base <- link_surv_base.helper(b = basehaz.post)
-      surv.approx <- Hmisc::approxExtrap(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
-      # surv.approx <- approx(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
+      surv.base <- link_surv_base.helper(b = basehaz.post)
+
+      if(method == "linear" | method == "constant"){
+        # surv.approx <- approx(x = obs.time, y = surv.base, xout = timepoints, method = method)$y # only interpolation
+        surv.approx <- Hmisc::approxExtrap(x = obs.time, y = surv.base, xout = timepoints, method = method)$y # with extrapolation
+      } else if(method == "gp" | method == "gaussian process"){
+        surv.bgp <- tgp:: btgp(X= obs.time, Z= surv.base)
+        surv.bgp$Xsplit <- rbind(obs.time, timepoints)
+        surv.approx <- predict(object = surv.bgp, XX = timepoints)$ZZ.mean
+      } else {
+        stop2(paste0("method ", method, " not supported"))
+      }
+
       surv.approx[surv.approx > 1] <- 1
       surv.approx[surv.approx < 0] <- 0
       surv.approx
     })
     surv.post <- do.call(cbind, surv.post)
     surv.post <- apply(surv.post, 1, mean)
-    #No difference in survival expected in the null model
-    ind.post <- matrix(rep(surv.post, nrow(testx)),
-                       nrow = nrow(testx),
-                       ncol = n_distinct(timepoints),
-                       byrow = TRUE)
-  }
-  return(ind.post)
-}
-
-
-
-
-
-# Function to predict the survival for each individual
-#'
-#' Predict survival from a stan_surv object
-#'
-#' @export link_surv
-#' @importFrom Hmisc approxExtrap
-#'
-#' @examples
-#' pbc2 <- survival::pbc
-#' pbc2 <- pbc2[!is.na(pbc2$trt),]
-#' pbc2$status <- as.integer(pbc2$status > 0)
-#' m1 <- stan_surv(survival::Surv(time, status) ~ trt, data = pbc2)
-#'
-#' df <- flexsurv::bc
-#' m2 <- stan_surv(survival::Surv(rectime, censrec) ~ group,
-#'                 data = df, cores = 1, chains = 1, iter = 2000,
-#'                 basehaz = "fpm", iknots = c(6.594869,  7.285963 ),
-#'                 degree = 2, prior_aux = normal(0, 2, autoscale = F))
-#'
-pred_surv2 <- function(fit, testx = NULL, timepoints = NULL, time = "time", status = "status", ncores = 1L){
-  obs.time <- get_obs.time(fit$data)
-  if(is.null(timepoints)){
-    timepoints <- test.time <- get_obs.time(testx)
-  }
-  basehaz.samples <- extract_basehaz_draws(fit)
-  spline.basis <- extract_splines_bases(fit)
-
-  if(!check_null_model(fit)){
-    beta_draws <- extract_beta_draws(fit);
-    varis.obs <- get_predictors(fit)
-
-surv.base <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
-  basehaz.post <- sapply(seq_along(1:nrow(spline.basis)), function(n){
-    basehaz.samples[s, ]  %*% spline.basis[n, ]
-    })
-  link_surv_base.helper(b = basehaz.post)
-})
-surv.base <- do.call(cbind, surv.base)
-surv.base.mean <- apply(X = surv.base, MARGIN = 1, FUN = median)
-
-obs.surv <- data.frame(surv = surv.base.mean,
-                       time = obs.time )
-#st_mod <- rstanarm::stan_gamm4(surv ~ s(time, bs='gp'), data = obs.surv) Gaussian procces??
-#st_mod <- rstanarm::stan_glm(surv ~ time, data = obs.surv,  family = gaussian(), prior = cauchy(),  prior_intercept = cauchy() ) fail linear model just plot and see that is not linear
-# stan_file <- system.file('stan', 'weibull_survival_null_model.stan', package =  'biostan') try weibull?
-options(mc.cores = parallel::detectCores() )
-rstan_options(auto_write = TRUE)
-fit1 <- brms::brm(surv ~ gp(time), data = obs.surv)
-
-pred.surv.base <- rstanarm::posterior_predict(object = st_mod, newdata = data.frame(time = timepoints) )
-pred.surv.base <- exp( apply(pred.surv.base, 2, mean) )
-pred.surv.base[pred.surv.base > 1] <- 1
-pred.surv.base[pred.surv.base < 0] <- 0
-
-ind.post <- parallel::mclapply(seq_along(1:nrow(testx)),
-                               function(i){
-  surv.post <- sapply(seq_along(1:nrow(beta_draws)), function(s){
-    linear_predictor <- varis.obs[i, ] %*% beta_draws[s, ]
-    link_surv_lin.helper(p = linear_predictor, s = pred.surv.base)
-  })
-  apply(surv.post, 1, mean)
-}, mc.cores = ncores)
-
-ind.post <- do.call(rbind, ind.post)
-
-
-rownames(ind.post) <- rownames(testx)
-  } else {
-    # For null model
-    surv.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
-      basehaz.post <- sapply(seq_along(1:nrow(spline.basis)), function(n){
-        basehaz.samples[s, ]  %*% spline.basis[n, ]
-      })
-      surv_base <- link_surv_base.helper(b = basehaz.post)
-      surv.approx <- Hmisc::approxExtrap(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
-      # surv.approx <- approx(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
-      surv.approx[surv.approx > 1] <- 1
-      surv.approx[surv.approx < 0] <- 0
-      surv.approx
-    })
-    surv.post <- do.call(cbind, surv.post)
-    surv.post <- apply(surv.post, 1, median)
     #No difference in survival expected in the null model
     ind.post <- matrix(rep(surv.post, nrow(testx)),
                        nrow = nrow(testx),

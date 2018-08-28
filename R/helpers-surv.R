@@ -66,11 +66,11 @@ link_surv <- function(fit, testx = NULL, timepoints = NULL, method = "linear", t
 
 link_surv_base.helper <- function(b){
     #to translate baseline survival
-    exp( -(b))
+    exp(-c(b ) )
 }
 
 link_surv_lin.helper <- function(p, s){
-  s^(exp(c(p) ))
+  s^(exp(c(p ) ) )
 }
 
 prepare_surv <- function(d, time = "time", status = "status"){

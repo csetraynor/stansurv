@@ -1,0 +1,374 @@
+# !diagnostics off
+---
+title: "Comparision of piecewise exponential model and cox model in survival analysis"
+author: "Carlos S Traynor"
+date: "14 August 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an experiment to show how the classical Cox model and the Bayesian piecewise exponential model compare.
+
+When to use survival analysis?
+
+When you have a time-varying 0-1 outcome that we aim to understand in terms of covariates.
+As for example steady state exposure or tumor size.
+
+Types of questions:
+
+Models to describe: 
+
+Is a survival prediction better explained by another covariate.
+
+Models to predict:
+
+How well can a model predict outcome of new patients.
+
+## Load libraries
+
+We will need the parallel library, which is an R core (not CRAN), merger of snow and multicore and that we'll use to speed up HMC and computations of model performance.
+
+```{r}
+if(!require("devtools")) install.packages("devtools")
+if(!require("survbayes2")) devtools::install_github("csetraynor/survbayes2")
+```
+
+
+```{r libs}
+library(readr)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(survival)
+library(parallel)
+library(caret)
+library(rsample)
+library(VIM)
+library(rstan)
+library(rstanarm)
+theme_set(theme_bw())
+devtools::document()
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+```
+
+## Load data
+
+Load Lung Scamous carcinoma TCGA dataset
+```{r data}
+data(lusc)
+
+#VARIABLE DESCRIPTION
+
+```
+
+Observe the dataset.
+
+```{r}
+glimpse(lusc)
+```
+
+## Data preprocess
+
+Before start modeling we need to:
+
+1. Clean and ensure R is recognising the correct data types.
+
+2. Facilitate the data analysis work.
+
+3. Deal with via deleting or imputing missing values.
+
+Facilitate the data analysis work.
+
+```{r}
+#convert variable names to lower case
+colnames(lusc) <- tolower(colnames(lusc))
+#convert all string NA to NA format
+lusc <- lusc %>%
+  mutate_all(funs(convert_blank_to_na))
+
+lusc %>%
+    VIM::aggr(prop = FALSE, combined = TRUE, numbers = TRUE,
+                sortVars = TRUE, sortCombs = TRUE, plot = FALSE, only.miss = TRUE)
+```
+
+Only filter observations of positive smoking history.
+```{r}
+lusc <- lusc %>%
+  dplyr::filter(tobacco_smoking_history_indicator != "1" )
+```
+
+Convert to data types. Select variables and create dummy variables that split individuals in bad or good prognosis.
+
+```{r}
+lusc <- lusc %>% 
+  dplyr::select( patient_id, os_status, os_months,  ajcc_nodes_pathologic_pn, ajcc_tumor_pathologic_pt, age,  icd_10, sex , ajcc_pathologic_tumor_stage, ajcc_metastasis_pathologic_pm, tobacco_smoking_history_indicator ) %>%
+  dplyr::mutate(age = as.numeric(age),
+                os_months = as.numeric(os_months),
+                os_status = as.logical(os_status == "DECEASED"),
+                age_d = ifelse(age < 65, 0, 1),
+                stage = 0,
+                nodes = 0,
+                tumor = 0,
+                metastasis = ifelse(ajcc_metastasis_pathologic_pm == "M0", 0, 1),
+                smoke = 0) 
+```
+
+Dummy variables will be created, those subgroup which are (hypothesised) to be associated with higher risk will be 1 and lower risk 0. Besides R's modeling function will   work better when using factors for class variables.
+
+```{r}
+lusc$stage[grep("III|IV", lusc$ajcc_pathologic_tumor_stage)] <- 1
+
+lusc$nodes[grep("2|3", lusc$ajcc_nodes_pathologic_pn)] <- 1
+
+lusc$tumor[grep("3|4", lusc$ajcc_tumor_pathologic_pt)] <- 1
+
+lusc$smoke[grep("2", lusc$tobacco_smoking_history_indicator)] <- 1
+
+# An International Prognostic Index variable is created which has levels low, medium and high. 
+lusc <- lusc %>%
+  dplyr::mutate(ipi_n = stage + nodes + 
+                  tumor + metastasis,
+                ipi = ifelse( ipi_n < 1 , "low", 
+                             ifelse( ipi_n < 2 , "medium",
+                              "hihg") ) )
+
+lusc <- lusc %>%
+  dplyr::mutate_at(c("stage", "nodes", "tumor", "smoke"), as.factor)
+  
+```
+
+
+
+```{r}
+lusc %>%
+    VIM::aggr(prop = FALSE, combined = TRUE, numbers = FALSE,
+                sortVars = TRUE, sortCombs = TRUE, plot = TRUE, only.miss = TRUE)
+
+```
+
+```{r}
+lusc <- lusc[complete.cases(lusc), ] # get a clean dataset for modeling techniques
+```
+
+
+
+## Standardisation of covariates
+
+It's an interesting practise to standardise the test dataset with the training dataset. This is a simple strategy that guards against overfitting when using training test split. Because is more realistic to assume that we don have the wider world information beforehand.
+
+```{r}
+preProcValues <- caret::preProcess(lusc[c("age")], method = c("center", "scale") )
+trainTransformed <- as.data.frame( predict(preProcValues, lusc[c("age")]) )
+colnames(trainTransformed) = c("age_std")
+luscs <- cbind(lusc, trainTransformed)
+rm(list = c("trainTransformed", "preProcValues")) # but we keep preProcValues
+```
+
+## Our first model
+
+We may start with no covariates.
+
+```{r}
+survbayes.mod1 <- post_surv(x = luscs %>%
+                              dplyr::mutate(time = os_months,
+                                            status = os_status))
+summary(survbayes.mod1)
+```
+
+This summarises the model fit and parameters estimates as posterior mean and 95% credible interval together with two more diagnostics. Rhat is the potential scale reduction factor or Gelman-Rubin diagnostic which is a measure of how well the chains have converged ideally should be equal to 1. and n_eff is a crude measure of effective sample size of the posterior samples of the model.
+
+The summary also includes the smooth of times parameters:
+
+s(time) the fixed effect of the spline, which is the linear function that is perfectly smooth.
+
+smooth_sd[s(time)] is the variance parameter, which controls the wiggliness of the smooth- the larger this value the more wiggly the smooth.
+
+## Incorporating a categorical variable into the model
+
+Model 2 incorporates smoking status whether the patient keep with the smoking habit (1) or is a reformed smoker (0).
+
+```{r}
+survbayes.mod2 <- post_surv(x = luscs %>%
+                              dplyr::mutate(time = os_months,
+                                            status = os_status),
+                            surv_form = "smoke")
+summary(survbayes.mod2)
+```
+
+The non-intercept, smoke parameter is known as the beta regression parameters. Notice  that the parameter is labelled as smoke1 - indicating that the model is treating the baseline probability of reformed smokers, and the additional parameter shows the modification.
+
+0 = smoking reform does not alter the baseline probability of survival.
+
+greater than 0 = being reformed decreases the probability of survival
+
+less than 0 = being reformed increases the probability of survival.
+
+We can use the baseline hazard to get the survival prediction. Here is a kaplan-meier maximum likelihood estimat and the overlayed survival prediction of model 2.
+
+```{r , echo=FALSE}
+newdata <- gen_long_dat(dat = luscs %>% 
+                          mutate(time = os_months,
+                                 status = os_status))
+
+post <- posterior_linpred(survbayes.mod2, newdata = newdata)
+plot.matrix <- link.surv(post = post, longdata = newdata %>%
+                           mutate(sample_id = numeric_id))
+
+plot.frame <- get_plot.frame(plot.matrix = plot.matrix, strata = c("smoke"), obs = rbind(lusc %>%                                                                               dplyr::mutate(
+  time = os_months,
+  status = os_status
+)))
+
+plot.frame$smoke <- as.logical(as.numeric(as.character(plot.frame$smoke)))
+
+# Kaplan and Meier ML estimate
+obs.mortality <- get_km.frame(luscs, strata = c("smoke"), time = "os_months", status = "os_status" ) %>%
+  dplyr::mutate_at(vars("smoke"), as.numeric) %>%
+  dplyr::mutate_at(vars("smoke"), as.logical)
+head(obs.mortality)
+
+p2 <- ggplot2::ggplot(plot.frame %>%
+                       mutate(History = ifelse(smoke, "Currently smoking", "Reformed smoking") ),
+                     aes(time, postmean, group = History, colour = History)) +
+  geom_line(mapping=aes(group = History, colour = History),  alpha = 0.8)  +
+   geom_ribbon(aes( ymin = lower,
+                    ymax = upper,
+                    fill = History), alpha = 0.5, colour=NA) +
+  geom_step(data=obs.mortality  %>%
+              mutate(History = ifelse(smoke, "Currently smoking", "Reformed smoking") ) , aes(time,
+                                     surv,
+                                     colour = History),  alpha = 0.9)+
+  labs(title = "Smoking LUSC patients",
+       subtitle = "Survival counterfactual plot",
+       caption = "4000 posterior sample size") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylab("Survival probability") +
+  xlab("Time (months)") +
+  theme_bw() + theme(legend.position=c(0.7, 0.72)) 
+p2
+```
+
+
+## Comparing models via LOO
+
+Model performance may depend upon definition of the target. It is different to have an accurate model than a predictive one. We propose log predictive density to be our gain function to be maximised. Moreover, the reduction of out-of-sample uncertainty 
+The model performance depends upon definition of the target, which is known as the loss function in cost-benefit analysis. Information theory provides an elegant framework to establish deviance as a measure of uncertainty reduction. It has to be noted that is out-of-sample deviance which is of interest, otherwise deviance would trail overfitting. Therefore, information criterion, such as \gls{AIC}, \gls{BIC}, \gls{DIC} or \gls{WAIC} \cite{waic}, estimate the out-of-sample deviance. 
+The approximate leave-one-out cross-validation or loo information criterion estimate the expected predictive density (ELPD) for a new dataset. This information criterior similarly to AIC is very useful when comparing nested models, or selecting covariates.
+
+```{r}
+loo.mod1 <- loo(survbayes.mod1, cores = detectCores())
+loo.mod2 <- loo(survbayes.mod2, cores = detectCores())
+print(loo.mod1)
+print*loo.mod2
+```
+
+We may compare this two nested models via loo.
+
+```{r}
+print( compare_models(loo.mod1, loo.mod2) , digits = 3)
+```
+
+The second model maximises the ELPD and therefore is the better model. In the deviance scale this difference is given by :
+```{r}
+-2*compare_models(loo.mod1, loo.mod2)[1]
+```
+
+Which confirms that the second model is expected to produce better out-of-sample predictions.
+We may compare various models including all relevant clinical variables via the function stan_surv_step
+
+```{r}
+survbayes.step.fit1 <- stan_surv_step(x = luscs %>%
+            dplyr::mutate(time = os_months,
+                          status = os_status), 
+            fit = survbayes.mod1,
+            surv_form = c("smoke", "age_std", "stage", "nodes", "tumor", "metastasis", "s(age_std)"), verbose = TRUE)
+summary(survbayes.step.fit1)
+```
+
+The drop in the expected log predictive density in the third model indicate that this model might be over-fitting. An alternative to over-fitting might be to use regularizing priors, i.e. be skeptical by the training sample.
+
+
+## Cox model fitting
+
+The Cox model is a well-known, widely used survival model and a benchmark to which we will compare model performance. The Cox model explores the effect of a set of $\mathbf{z}$ covariates on the hazard function, which is given by: 
+
+\begin{equation}
+\widehat{h}(t|x)=\widehat{h}_{0}(t)·e^{ \mathbf{z^{T}} \widehat{\mathbf{\beta} } }
+\end{equation} 
+
+where $h_{0}(t)$ is an arbitrary baseline hazard function. Thus, the Cox model gives importance to the hazard ratio, $\beta$.
+A drawback of the Cox model as it is might be that is unfit to predict the survival for new individuals because that would require getting an estimate of $\widehat{h}_{0}(t)$. However, the cumulative hazard function might be approximated with the \gls{N-A-A}, which is given by:
+\begin{equation}
+\widehat{\Lambda}_{NAA}(t) = \sum_{i: t_i < t} \left ( \frac{d_{i}}{r_i} \right ) 
+\end{equation}
+Yieldieng the survival probability for prognostic modeling. 
+ 
+Nested Cox model may be compared via forward-stepwise and AIC as model performance criteria.
+
+```{r}
+cox.mod1 <- cox_step(x = luscs %>% 
+                       mutate(time = os_months,
+                              status = os_status), surv_form = c("smoke", "age_std", "stage", "nodes", "tumor", "metastasis") )
+```
+
+## Comparing not nested models
+
+The use of LOO-ELPD or AIC may be an efficient and practical way to compare nested models. However, to compare models with different probability density function another approach is needed. The approach that we will follow is to compare the model predictions of survival against the observed survival. We could compare the model prediction on the same dataset used to train the model. However, this has been shown to be a wrong approach because it may lead to over-fitting models.
+
+## Creating training-test split
+
+One widespread strategy to avoid overfitting, which is a major concern when developing prognostic models is to create a train-test split. This is a simple approach that can help to compare fairly predictions of different model.
+
+We can split the original dataset into training and test splits.
+
+```{r}
+set.seed(100)
+vfold <- rsample::mc_cv(lusc, times = 1, strata = "os_status")$splits$`1`
+train_lusc <- rsample::analysis(vfold)
+test_lusc <- rsample::assessment(vfold)
+```
+
+Training data: Used for training the model.
+
+Test data: A separate, hold-out dataset, used for testing the model performance.
+
+A goodp practice to avoid over-fitting is to standardise the training data only and use the information from the training split to standardise the test split.
+
+```{r}
+preProcValues <- caret::preProcess(train_lusc[c("age")], method = c("center", "scale") )
+trainTransformed <- as.data.frame( predict(preProcValues, train_lusc[c("age")]) )
+colnames(trainTransformed) = c("age_std")
+train_luscs <- cbind(train_lusc, trainTransformed)
+rm(trainTransformed) # but we keep preProcValues
+testTransformed <- as.data.frame( predict(preProcValues, test_lusc[c("age")]) )
+colnames(testTransformed) = c("age_std")
+test_luscs <- cbind(test_lusc, testTransformed)
+rm(list = c("preProcValues", "testTransformed")) 
+```
+
+To compare the Cox model and the Bayesian survival model various survival measures may be used as for example survival Brier score, concordance index and survival ROC.
+
+## Comparing via the Brier score
+
+## Comparing via the c-index
+
+## Comparing via ROC curve
+
+## Conclusion
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

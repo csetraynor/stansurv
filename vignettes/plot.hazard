@@ -1,0 +1,20 @@
+
+# Comparing with loo
+library(loo)
+log_lik <- extract_log_lik(m1$stanfit)
+loo.test <- loo::loo(as.matrix(samples$lp__))
+
+
+# Fitting model
+basehaz.samples <- as.matrix( rstan::extract(m1$stanfit)$basehaz_coefs )
+spline_basis <- unlist( m1$basehaz$spline_basis )
+
+
+lapply(seq_along(1:nrow(basehaz.samples)), function(s){
+  sapply(seq_along(1:nrow(spline_basis)), function(n){
+    basehaz.samples[s, ] %*% spline_basis[n, ]
+  })
+})
+
+
+
