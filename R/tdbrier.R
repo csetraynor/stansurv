@@ -46,7 +46,7 @@
 tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L, method = "gp"){
   #select timepoints with observed event
   holdout <- prepare_surv(holdout, time = time, status = status)
-  timepoints =  seq(min(get_obs.time(testx)), max(get_obs.time(testx)), length.out = 100)
+  timepoints =  seq(min(holdout[[time]]), max(holdout[[time]]), length.out = 100)
 
   if(any( class(fit)  == "coxph") ){
     #get probabilites
