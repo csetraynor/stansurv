@@ -24,7 +24,7 @@ stan_surv <- function(formula, data, basehaz = "fpm", timescale = "log",
                       prior_aux = list(), prior_PD = FALSE,
                       algorithm = c("sampling", "meanfield", "fullrank"),
                       adapt_delta = 0.95, max_treedepth = 11L,
-                      init = "random", ...) {
+                      init = "random", cores = 1L, ...) {
 
   #-----------------------------
   # Pre-processing of arguments
@@ -151,18 +151,21 @@ stan_surv <- function(formula, data, basehaz = "fpm", timescale = "log",
       object = stanfit,
       data   = standata,
       pars   = stanpars,
-      show_messages = FALSE
+      show_messages = FALSE,
+      cores = cores
     )
     #    args <- set_sampling_args(
     #      object = stanfit,
     #      data   = standata,
     #      pars   = stanpars,
     #      prior  = NULL,
-    #      user_dots = dots,
-    #      user_adapt_delta = adapt_delta,
-    #      user_max_treedepth = max_treedepth,
+    #      dots = dots,
+    #      adapt_delta = adapt_delta,
+    #      max_treedepth = max_treedepth,
     #      init = init,
-    #      show_messages = FALSE)
+    #      show_messages = FALSE,
+    #      cores = cores
+    # )
     args[names(dots)] <- dots
     stanfit <- do.call(rstan::sampling, args)
   } else {

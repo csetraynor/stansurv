@@ -138,3 +138,89 @@ get_km.frame <- function(obs, strata = NULL, time = "time", status = "status"){
 }
 
 
+# Function to predict the survival for each individual
+#'
+#' Predict survival from a stan_surv object
+#'
+#' @export link_surv
+#' @importFrom Hmisc approxExtrap
+#'
+#' @examples
+#' pbc2 <- survival::pbc
+#' pbc2 <- pbc2[!is.na(pbc2$trt),]
+#' pbc2$status <- as.integer(pbc2$status > 0)
+#' m1 <- stan_surv(survival::Surv(time, status) ~ trt, data = pbc2)
+#'
+#' df <- flexsurv::bc
+#' m2 <- stan_surv(survival::Surv(rectime, censrec) ~ group,
+#'                 data = df, cores = 1, chains = 1, iter = 2000,
+#'                 basehaz = "fpm", iknots = c(6.594869,  7.285963 ),
+#'                 degree = 2, prior_aux = normal(0, 2, autoscale = F))
+#'
+pred_surv <- function(fit, testx = NULL, timepoints = NULL, method = "linear", time = "time", status = "status", ncores = 1L){
+  obs.time <- get_obs.time(fit$data)
+  if(method != "linear" && method != "constant"){
+    stop2(paste0("method ", method, " not implement.") )
+  }
+  if(is.null(timepoints)){
+    timepoints <- test.time <- get_obs.time(testx)
+  }
+  basehaz.samples <- extract_basehaz_draws(fit)
+  spline.basis <- extract_splines_bases(fit)
+
+  if(!check_null_model(fit)){
+    beta_draws <- extract_beta_draws(fit);
+    varis.obs <- get_predictors(fit)
+
+    ind.post <- parallel::mclapply(seq_along(1:nrow(testx)), function(i){
+      surv.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
+        basehaz.post <- sapply(seq_along(1:nrow(spline.basis)), function(n){
+          basehaz.samples[s, ]  %*% spline.basis[n, ]
+        })
+        surv_base <- link_surv_base.helper(b = basehaz.post)
+        surv.approx <- Hmisc::approxExtrap(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
+        # surv.approx <- approx(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
+        surv.approx[surv.approx > 1] <- 1
+        surv.approx[surv.approx < 0] <- 0
+        surv.approx
+        linear_predictor <- varis.obs[i, ] %*% beta_draws[s, ]
+        link_surv_lin.helper(p = linear_predictor, s = surv.approx)
+      })
+      surv.post <- do.call(cbind, surv.post)
+      apply(surv.post, 1, median)
+    }, mc.cores = ncores)
+    ind.post <- do.call(rbind, ind.post)
+    rownames(ind.post) <- rownames(testx)
+  } else {
+    # For null model
+    surv.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
+      basehaz.post <- sapply(seq_along(1:nrow(spline.basis)), function(n){
+        basehaz.samples[s, ]  %*% spline.basis[n, ]
+      })
+      surv.base <- link_surv_base.helper(b = basehaz.post)
+
+      if(method == "linear" | method == "constant"){
+        # surv.approx <- approx(x = obs.time, y = surv.base, xout = timepoints, method = method)$y # only interpolation
+        surv.approx <- Hmisc::approxExtrap(x = obs.time, y = surv.base, xout = timepoints, method = method)$y # with extrapolation
+      } else if(method == "gp" | method == "gaussian process"){
+        surv.bgp <- tgp:: btgp(X= obs.time, Z= surv.base)
+        surv.bgp$Xsplit <- rbind(obs.time, timepoints)
+        surv.approx <- predict(object = surv.bgp, XX = timepoints)$ZZ.mean
+      } else {
+        stop2(paste0("method ", method, " not supported"))
+      }
+
+      surv.approx[surv.approx > 1] <- 1
+      surv.approx[surv.approx < 0] <- 0
+      surv.approx
+    })
+    surv.post <- do.call(cbind, surv.post)
+    surv.post <- apply(surv.post, 1, mean)
+    #No difference in survival expected in the null model
+    ind.post <- matrix(rep(surv.post, nrow(testx)),
+                       nrow = nrow(testx),
+                       ncol = n_distinct(timepoints),
+                       byrow = TRUE)
+  }
+  return(ind.post)
+}
