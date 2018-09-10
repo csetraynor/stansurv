@@ -24,7 +24,7 @@ stan_surv <- function(formula, data, basehaz = "fpm", timescale = "log",
                       prior_aux = list(), prior_PD = FALSE,
                       algorithm = c("sampling", "meanfield", "fullrank"),
                       adapt_delta = 0.95, max_treedepth = 11L,
-                      init = "random", cores = 1L, ...) {
+                      init = "random", cores = 1L, out_data = FALSE, ...) {
 
   #-----------------------------
   # Pre-processing of arguments
@@ -140,6 +140,7 @@ stan_surv <- function(formula, data, basehaz = "fpm", timescale = "log",
   standata$delayed <- ai(!all_zero(standata$t_beg))
   standata$npats <- standata$nevents <- 0L # not currently used
 
+  # str(standata)
   #-----------
   # Fit model
   #-----------
@@ -154,6 +155,10 @@ stan_surv <- function(formula, data, basehaz = "fpm", timescale = "log",
       show_messages = FALSE,
       cores = cores
     )
+    if(out_data){
+      return(args)
+      stop("returning data")
+    }
     #    args <- set_sampling_args(
     #      object = stanfit,
     #      data   = standata,

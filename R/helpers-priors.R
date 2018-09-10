@@ -32,7 +32,7 @@ handle_prior <- function(prior, nvars, default_scale,
 
   # additional info for shrinkage priors
   if (prior_name %in% shrink_priors()) {
-    prior_scale <- NULL
+    #prior_scale <- NULL
     global_prior_scale <- prior$global_scale
     global_prior_df    <- prior$global_df
     slab_scale         <- prior$slab_scale

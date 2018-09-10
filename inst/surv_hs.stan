@@ -11,51 +11,6 @@ functions {
     return lb;
 	}
 
-
-  /**
-   * Hierarchical shrinkage parameterization
-   *
-   * @param z_beta A vector of primitive coefficients
-   * @param global A real array of positive numbers
-   * @param local A vector array of positive numbers
-   * @param global_prior_scale A positive real number
-   * @param error_scale 1 or sigma in the Gaussian case
-   * @param c2 A positive real number
-   * @return A vector of coefficientes
-   */
-  vector hs_prior(vector z_beta, real[] global, vector[] local,
-                  real global_prior_scale, real error_scale, real c2) {
-    int K = rows(z_beta);
-    vector[K] lambda = local[1] .* sqrt(local[2]);
-    real tau = global[1] * sqrt(global[2]) * global_prior_scale * error_scale;
-    vector[K] lambda2 = square(lambda);
-    vector[K] lambda_tilde = sqrt( c2 * lambda2 ./ (c2 + square(tau) * lambda2) );
-    return z_beta .* lambda_tilde * tau;
-  }
-
-  /**
-   * Hierarchical shrinkage plus parameterization
-   *
-   * @param z_beta A vector of primitive coefficients
-   * @param global A real array of positive numbers
-   * @param local A vector array of positive numbers
-   * @param global_prior_scale A positive real number
-   * @param error_scale 1 or sigma in the Gaussian case
-   * @param c2 A positive real number
-   * @return A vector of coefficientes
-   */
-  vector hsplus_prior(vector z_beta, real[] global, vector[] local,
-                      real global_prior_scale, real error_scale, real c2) {
-    int K = rows(z_beta);
-    vector[K] lambda = local[1] .* sqrt(local[2]);
-    vector[K] eta = local[3] .* sqrt(local[4]);
-    real tau = global[1] * sqrt(global[2]) * global_prior_scale * error_scale;
-    vector[K] lambda_eta2 = square(lambda .* eta);
-    vector[K] lambda_tilde = sqrt( c2 * lambda_eta2 ./
-                                 ( c2 + square(tau) * lambda_eta2) );
-    return z_beta .* lambda_tilde * tau;
-  }
-
   /**
   * Return the required number of local hs parameters
   *
@@ -85,15 +40,17 @@ functions {
     vector[rows(z_beta)] beta;
     if (prior_dist == 0) beta = z_beta;
     else if (prior_dist == 1) beta = z_beta .* prior_scale + prior_mean;
-    /*else if (prior_dist == 2) for (k in 1:rows(prior_mean)) {
+    else if (prior_dist == 2) for (k in 1:rows(prior_mean)) {
       beta[k] = CFt(z_beta[k], prior_df[k]) * prior_scale[k] + prior_mean[k];
-    }*/
+    }
     else if (prior_dist == 3) {
       real c2 = square(slab_scale) * caux[1];
       if (family == 1) // don't need is_continuous since family == 1 is gaussian in mvmer
         beta = hs_prior(z_beta, global, local, global_prior_scale, aux[1], c2);
       else
         beta = hs_prior(z_beta, global, local, global_prior_scale, 1, c2);
+        beta_biom <- hs_prior_lp(tau_s1_biom_raw, tau_s2_biom_raw, tau1_biom_raw, tau2_biom_raw, nu) .* beta_biom_raw;
+
     }
     else if (prior_dist == 4) {
       real c2 = square(slab_scale) * caux[1];
@@ -128,17 +85,17 @@ functions {
                real[] global, vector[] mix, real[] one_over_lambda,
                real slab_df, real[] caux) {
     if      (prior_dist == 1) target += normal_lpdf(z_beta | 0, 1);
-    /*else if (prior_dist == 2) target += normal_lpdf(z_beta | 0, 1); // Student t*/
+    else if (prior_dist == 2) target += normal_lpdf(z_beta | 0, 1); // Student t
       else if (prior_dist == 3) { // hs
     real log_half = -0.693147180559945286;
     target += normal_lpdf(z_beta | 0, 1);
     target += normal_lpdf(local[1] | 0, 1) - log_half;
     target += inv_gamma_lpdf(local[2] | 0.5 * prior_df, 0.5 * prior_df);
     target += normal_lpdf(global[1] | 0, 1) - log_half;
-    target += inv_gamma_lpdf(global[2] | 0.5 * global_prior_df, 0.5 * global_prior_df);
+    target += inv_gamma_lpdf(global[2] | 0.5 * global_prior, 0.5 * global_prior);
     target += inv_gamma_lpdf(caux | 0.5 * slab_df, 0.5 * slab_df);
   }
-  else if (prior_dist == 4) { // hs+
+  else if (prior_dist_z == 4) { // hs+
     real log_half = -0.693147180559945286;
     target += normal_lpdf(z_beta | 0, 1);
     target += normal_lpdf(local[1] | 0, 1) - log_half;
