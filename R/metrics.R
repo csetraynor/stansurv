@@ -17,10 +17,10 @@
 #'                 basehaz = "fpm", iknots = c(6.594869,  7.285963 ),
 #'                 degree = 2, prior_aux = normal(0, 2, autoscale = F))
 #'
-pred_surv2 <- function(fit, testx = NULL, timepoints = NULL, time = "time", status = "status", ncores = 1L, method = "gp"){
+pred_surv2 <- function(fit, holdout = NULL, timepoints = NULL, time = "time", status = "status", ncores = 1L, method = "gp"){
   obs.time <- get_obs.time(fit$data)
   if(is.null(timepoints)){
-    timepoints <- test.time <- get_obs.time(testx)
+    timepoints <- test.time <- get_obs.time(holdout)
   }
   basehaz.samples <- extract_basehaz_draws(fit)
   spline.basis <- extract_splines_bases(fit)
@@ -31,26 +31,24 @@ pred_surv2 <- function(fit, testx = NULL, timepoints = NULL, time = "time", stat
 
     basehaz.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
       sapply(seq_along(1:nrow(spline.basis)), function(n){
-      basehaz.samples[s, ]  %*% spline.basis[n, ]
-    })})
+        basehaz.samples[s, ]  %*% spline.basis[n, ]
+      })})
 
     basehaz.post <- do.call(cbind, basehaz.post)
     basehaz.post <- apply(X = basehaz.post, MARGIN = 1, FUN = mean)
-    # obs.dat <- data.frame(haz = basehaz,
-                           # time = obs.time )
-    basehaz.post <- unlist(basehaz.post)
+
     if(method == "linear" | method == "constant"){
       # surv.approx <- approx(x = obs.time, y = surv.base, xout = timepoints, method = method)$y # only interpolation
-      haz.approx <- Hmisc::approxExtrap(x = obs.time, y = basehaz.post, xout = timepoints, method = method)$y # with extrapolation
+      haz.approx <- Hmisc::approxExtrap(x = obs.time, y = basehaz.post, xout = timepoints, method = method, f = 1)$y # with extrapolation
     } else if(method == "gp" | method == "gaussian process"){
-      haz.bgp <- tgp:: bgp(X= obs.time, Z= basehaz.post, verb = 0)
+      haz.bgp <- tgp::bgp(X= obs.time, Z= basehaz.post, verb = 1)
       X <- data.frame(x1 = obs.time)
       XX <- data.frame(x1 = timepoints)
       haz.bgp$Xsplit <- rbind(X, XX)
       haz.approx <- predict(object = haz.bgp, XX = timepoints)$ZZ.mean
     } else if(method == "tgp" | method == "treed gaussian process"){
       haz.btgp <- tgp:: btgp(X= obs.time,
-                             Z= basehaz.post, verb = 0)
+                             Z= basehaz.post, verb = 1)
       X <- data.frame(x1 = obs.time)
       XX <- data.frame(x1 = timepoints)
       haz.btgp$Xsplit <- rbind(X, XX)
@@ -62,35 +60,45 @@ pred_surv2 <- function(fit, testx = NULL, timepoints = NULL, time = "time", stat
     surv.approx[surv.approx > 1] <- 1
     surv.approx[surv.approx < 0] <- 0
 
-ind.post <- lapply(seq_along(1:nrow(testx)),
-                               function(i){
-  surv.post <- sapply(seq_along(1:nrow(beta_draws)), function(s){
-    lin_post <- varis.obs[i, ] %*% beta_draws[s, ]
-    link_surv_lin.helper(p = lin_post, s = surv.approx)
-  })
-  apply(surv.post, 1, mean)
-})
+    ind.post <- lapply(seq_along(1:nrow(holdout)), function(i){
+surv.post <- sapply(seq_along(1:nrow(beta_draws)), function(s){
+          lin_post <- varis.obs[i, ] %*% beta_draws[s, ]
+        link_surv_lin.helper(p = lin_post, s = surv.approx)
+                         })
+                         apply(surv.post, 1, mean)
+                       })
 
-ind.post <- do.call(rbind, ind.post)
-rownames(ind.post) <- rownames(testx)
+    ind.post <- do.call(rbind, ind.post)
+    rownames(ind.post) <- rownames(holdout)
   } else {
     # For null model
-    surv.post <- lapply(seq_along(1:nrow(basehaz.samples)), function(s){
-      basehaz.post <- sapply(seq_along(1:nrow(spline.basis)), function(n){
-        basehaz.samples[s, ]  %*% spline.basis[n, ]
-      })
-      surv_base <- link_surv_base.helper(b = basehaz.post)
-      surv.approx <- Hmisc::approxExtrap(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
-      # surv.approx <- approx(x = obs.time, y = surv_base, xout = timepoints, method = method)$y
-      surv.approx[surv.approx > 1] <- 1
-      surv.approx[surv.approx < 0] <- 0
-      surv.approx
-    })
-    surv.post <- do.call(cbind, surv.post)
-    surv.post <- apply(surv.post, 1, median)
+
+    if(method == "linear" | method == "constant"){
+      # surv.approx <- approx(x = obs.time, y = surv.base, xout = timepoints, method = method)$y # only interpolation
+      haz.approx <- Hmisc::approxExtrap(x = obs.time, y = basehaz.post, xout = timepoints, method = method)$y # with extrapolation
+    } else if(method == "gp" | method == "gaussian process"){
+      haz.bgp <- tgp::bgp(X= obs.time, Z= basehaz.post, verb = 1)
+      X <- data.frame(x1 = obs.time)
+      XX <- data.frame(x1 = timepoints)
+      haz.bgp$Xsplit <- rbind(X, XX)
+      haz.approx <- predict(object = haz.bgp, XX = timepoints)$ZZ.mean
+    } else if(method == "tgp" | method == "treed gaussian process"){
+      haz.btgp <- tgp:: btgp(X= obs.time,
+                             Z= basehaz.post, verb = 1)
+      X <- data.frame(x1 = obs.time)
+      XX <- data.frame(x1 = timepoints)
+      haz.btgp$Xsplit <- rbind(X, XX)
+      haz.approx <- predict(object = haz.btgp, XX = timepoints)$ZZ.mean
+    } else {
+      stop2(paste0("method ", method, " not implemented"))
+    }
+    surv.approx <- link_surv_base.helper(b = haz.approx)
+    surv.approx[surv.approx > 1] <- 1
+    surv.approx[surv.approx < 0] <- 0
+
     #No difference in survival expected in the null model
-    ind.post <- matrix(rep(surv.post, nrow(testx)),
-                       nrow = nrow(testx),
+    ind.post <- matrix(rep(surv.approx, nrow(holdout)),
+                       nrow = nrow(holdout),
                        ncol = n_distinct(timepoints),
                        byrow = TRUE)
   }
@@ -145,7 +153,8 @@ rownames(ind.post) <- rownames(testx)
 tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L, method = "gp"){
   #select timepoints with observed event
   holdout <- prepare_surv(holdout, time = time, status = status)
-  timepoints =  seq(min(holdout[[time]]), max(holdout[[time]]), length.out = 100)
+  observed.timepoints <- get_obs.time(holdout)
+  timepoints <-  seq(min(observed.timepoints), max(observed.timepoints), length.out = 100)
 
   if(any( class(fit)  == "coxph") ){
     #get probabilites
@@ -162,13 +171,14 @@ tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L,
     ibrier_ref <- integrate_tdbrier_reference(cox.brier)
     object <- cox.brier
 
-    rsquaredbs <- suppressWarnings ( pec::R2(object = cox.brier, times = cox.brier$maxtime, reference = 1 ) )
-    out <- list(object, rsquaredbs, ibrier, ibrier_ref, apperror, ref, time)
-    names(out) <- c("brier.object", "rsquaredbs","ibrier", "ibrieref", "apperror", "reference","time")
+    rsquaredbs <- unclass(1 - ( ibrier / ibrier_ref ) )
+
+    out <- list(object, rsquaredbs, ibrier, ibrier_ref, apperror, ref, time, method = "coxph")
+    names(out) <- c("brier.object", "rsquaredbs","ibrier_model", "ibrier_ref", "model_error", "ref_error","time", "method")
     out
 
   } else if (any( class(fit$stanfit) == "stanfit" ) ){
-    ind.pred <- pred_surv2(fit = fit, testx = holdout, timepoints = timepoints, ncores = ncores, method = method)
+    ind.pred <- pred_surv2(fit = fit, holdout = holdout, timepoints = timepoints, ncores = ncores, method = method)
 
     ba.brier <- suppressMessages( pec::pec(ind.pred, Surv(time, status) ~ 1,
                                            data = holdout,
@@ -181,10 +191,12 @@ tdbrier <- function(holdout, fit, time = "time", status = "status", ncores = 1L,
     ibrier <- integrate_tdbrier(ba.brier)
     ibrier_ref <- integrate_tdbrier_reference(ba.brier)
     object <- ba.brier
+    method <- method
 
-    rsquaredbs <- suppressWarnings ( pec::R2(object = ba.brier, times = ba.brier$maxtime, reference = 1) )
-    out <- list(object, rsquaredbs, ibrier, ibrier_ref, apperror, ref, time)
-    names(out) <- c("brier.object", "rsquaredbs","ibrier", "ibrier_ref", "apperror", "reference","time")
+    rsquaredbs <- unclass(1 - ( ibrier / ibrier_ref ) )
+
+    out <- list(object, rsquaredbs, ibrier, ibrier_ref, apperror, ref, time, method)
+    names(out) <-  c("brier.object", "rsquaredbs","ibrier_model", "ibrie_ref", "model_error", "ref_error","time", "method")
     out
   } else {
     stop2(paste0("Error: No method for evaluating predicted probabilities from objects in class", class(fit)))
@@ -205,6 +217,10 @@ integrate_tdbrier_reference <-
     ibrier <- pec::crps(x, models = "Reference", times =  x$maxtime)
     return(ibrier)
   }
+
+integrate_rsquared <- function(m, r){
+  1 - (m / r)
+}
 
 
 #' Get c-index
@@ -256,34 +272,34 @@ get_cindex <-
       probs <- pec::predictSurvProb(fit, newdata = holdout, times = timepoints)
 
       statistic <- suppressMessages( pec::cindex(probs,
-                            Surv(time, status) ~ 1,
-                                 data = holdout,
-                           pred.times = timepoints,
-                      eval.times = timepoints ) )
+                                                 Surv(time, status) ~ 1,
+                                                 data = holdout,
+                                                 pred.times = timepoints,
+                                                 eval.times = timepoints ) )
 
       apperror <- unlist(statistic$AppCindex)
       time <- timepoints
       concordance <-  mean(apperror)
       ref <- 0.5
-      out <- list(concordance, apperror, ref, time, statistic)
+      out <- list(concordance, apperror, ref, time, statistic, method = "cox")
       names(out) <- c( "concordance", "apperror", "reference","time",
-                       "object")
+                       "object", "method")
 
       out
 
     } else if (any( class(fit$stanfit) == "stanfit" ) ){
-      ind.pred <- pred_surv2(fit = fit, testx = holdout, timepoints = timepoints, ncores = ncores, method = method)
+      ind.pred <- pred_surv2(fit = fit, holdout = holdout, timepoints = timepoints, ncores = ncores, method = method)
       statistic <- suppressMessages( pec::cindex(ind.pred,
-                                 Surv(time, status) ~ 1,
-                                data = holdout,
-                             pred.times = timepoints,
-                         eval.times = timepoints ) )
+                                                 Surv(time, status) ~ 1,
+                                                 data = holdout,
+                                                 pred.times = timepoints,
+                                                 eval.times = timepoints ) )
 
       apperror <- unlist(statistic$AppCindex)
       time <- timepoints
       concordance <-  mean(apperror)
       ref <- 0.5
-      out <- list(concordance, apperror, ref, time, statistic)
+      out <- list(concordance, apperror, ref, time, statistic, method = method)
       names(out) <- c( "concordance", "apperror", "reference","time", "object")
 
       out
@@ -340,11 +356,11 @@ get_cindex <-
 #' Evaluating Random Forests for Survival Analysis Using Prediction Error
 #' Curves. Journal of Statistical Software, 50(11), 1-23.
 #' URL http://www.jstatsoft.org/v50/i11/.
-get_survroc <- function(test, fit, time = "time", status = "status", ncores = ncores){
+get_survroc <- function(holdout = NULL, fit, time = "time", status = "status", ncores = ncores){
 
   #select timepoints with observed event
   holdout <- prepare_surv(holdout, time = time, status = status)
-  timepoints =  seq(min(get_obs.time(holdout)), max(get_obs.time(holdout)), length.out = 100)
+  timepoints =  seq(min(get_obs.time(d = holdout)), max(get_obs.time(d = holdout)), length.out = 100)
 
   if(any( class(fit)  == "coxph") ){
     probs <- predict(fit, newdata = holdout, type = "lp")
@@ -397,39 +413,26 @@ get_survroc <- function(test, fit, time = "time", status = "status", ncores = nc
         }
       }
       X <- X[-match("id", colnames(X) )]
-      mod.samples <- mod.samples[colnames(X)]
 
+      probs <- lapply(seq_along(1:nrow(beta_draws)), function(samp){
+        probs <- as.matrix(X) %*% as.vector(unlist( beta_draws[samp, ] )) })
+      probs <- do.call(cbind, probs)
+      probs <- apply(probs, 1, mean)
 
-      roc.out <- parallel::mclapply(seq_along(1:nrow(mod.samples)), function(samp){
-        probs <- as.matrix(X) %*% as.vector(unlist( mod.samples[samp, ] ))
-        tdROC::tdROC(X = probs[!is.na(probs)],
-                     Y = test[[time]][!is.na(probs)],
-                     delta = test[[status]][!is.na(probs)],
-                     tau = max(test[[time]][test[[status]] ]),
+      statistic <- tdROC::tdROC(X = probs[!is.na(probs)],
+                     Y = holdout[[time]][!is.na(probs)],
+                     delta = holdout[[status]][!is.na(probs)],
+                     tau = max(holdout[[time]][holdout[[status]] ]),
                      n.grid = 1000)
-      }, mc.cores = ncores )
 
-      iroc <- sapply(roc.out, function(statistic){
-        integrate_tdroc(statistic)
-      })
+      iroc <-  integrate_tdroc(statistic)
 
-      iroc <- mean(unlist( iroc))
 
-      sens <- lapply(roc.out, function(sensibility){
-        sensibility$ROC$sens
-      })
+      sens <- statistic$ROC$sens
 
-      sens <- do.call(cbind, sens)
-      sens <- apply(sens, 1, mean)
+      spec <- statistic$ROC$spec
 
-      spec <- lapply(roc.out, function(specificity){
-        specificity$ROC$spec
-      })
-
-      spec <- do.call(cbind, spec)
-      spec <- apply(spec, 1, mean)
-
-      grid <- roc.out[[1]]$ROC$grid
+      grid <- statistic$ROC$grid
 
       out <- list(iroc, sens, spec, grid)
       names(out) <- c( "iroc", "sens", "spec","grid")
@@ -441,7 +444,10 @@ get_survroc <- function(test, fit, time = "time", status = "status", ncores = nc
     }
   }
 }
-#' @export
+
+
+#'  Calculate survival ROC
+#' @export integrate_tdroc
 #' @rdname integrate_tdroc
 integrate_tdroc  <-
   function( fit, ...) {

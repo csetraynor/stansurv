@@ -84,7 +84,7 @@ prepare_surv <- function(d, time = "time", status = "status"){
   d
 }
 
-get_obs.time <- function(d){
+get_obs.time <- function(d ){
   sort(  d$time[ as.logical(d$status) ] )
 }
 
